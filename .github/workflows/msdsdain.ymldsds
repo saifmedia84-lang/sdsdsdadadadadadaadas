@@ -1,5 +1,5 @@
 
-name: Android 15 Cloud VNC
+name: Android 15 Cloud VNC with Play Store
 
 on:
   workflow_dispatch:
@@ -7,161 +7,103 @@ on:
 permissions:
   contents: read
 
-env:
-  SDK_CACHE_KEY: android-sdk-api35-google-apis-x86_64-v3
-  AVD_NAME: CloudAndroid15
-
 jobs:
   android-cloud:
-    name: Android 15 Emulator
     runs-on: ubuntu-22.04
     timeout-minutes: 350
 
+    env:
+      ANDROID_HOME: ${{ runner.temp }}/android-sdk
+      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+      AVD_NAME: CloudAndroid15
+      SDK_CACHE_KEY: android-sdk-api35-google-play-x86_64-v4
+
     steps:
-      # 1. Checkout
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Java
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      # 3. KVM
-      - name: Enable KVM
-        shell: bash
-        run: |
-          set -e
-
-          if [ ! -e /dev/kvm ]; then
-            echo "ERROR: /dev/kvm unavailable."
-            exit 1
-          fi
-
-          sudo chmod 666 /dev/kvm
-          ls -l /dev/kvm
-
-      # 4. Dependencies
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-
-          sudo apt-get install -y \
-            curl unzip xvfb x11vnc openbox \
-            novnc websockify x11-utils \
-            netcat-openbsd libpulse0 libnss3 \
-            libx11-6 libxcb1 libxcomposite1 \
-            libxcursor1 libxi6 libxrender1 \
-            libxtst6 libxrandr2 libasound2 \
-            libgl1 libegl1 libfontconfig1 \
-            libdbus-1-3 libxkbcommon0 \
-            libgbm1 libdrm2 libexpat1
-
-      # 5. Restore SDK Cache
       - name: Restore Android SDK Cache
-        id: sdk-cache
         uses: actions/cache/restore@v4
         with:
-          path: ~/android-sdk
-          key: ${{ env.SDK_CACHE_KEY }}
+          path: ${{ runner.temp }}/android-sdk
+          key: android-sdk-api35-google-play-x86_64-v4
 
-      # 6. Android SDK
-      - name: Setup Android SDK
-        shell: bash
+      - name: Install Linux Dependencies
         run: |
-          set -e
+          sudo apt-get update
+          sudo apt-get install -y \
+            wget unzip curl git \
+            xvfb openbox x11vnc \
+            novnc websockify \
+            net-tools netcat-openbsd \
+            libpulse0 libx11-6 libxcb1 \
+            libxcomposite1 libxcursor1 \
+            libxi6 libxtst6 libnss3 \
+            libasound2t64
 
-          export ANDROID_HOME="$HOME/android-sdk"
-          export ANDROID_SDK_ROOT="$ANDROID_HOME"
-
+      - name: Install Android SDK
+        run: |
           mkdir -p "$ANDROID_HOME/cmdline-tools"
 
-          if [ ! -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
-            cd "$ANDROID_HOME"
+          if [ ! -f "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            cd "$RUNNER_TEMP"
+            wget -q https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
+            unzip -q commandlinetools-linux-13114758_latest.zip
 
-            curl -fL \
-              https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip \
-              -o tools.zip
-
-            unzip -q tools.zip
-
-            mkdir -p cmdline-tools/latest
-
-            mv cmdline-tools/bin cmdline-tools/latest/
-            mv cmdline-tools/lib cmdline-tools/latest/
-
-            [ ! -f cmdline-tools/NOTICE.txt ] || \
-              mv cmdline-tools/NOTICE.txt cmdline-tools/latest/
-
-            [ ! -f cmdline-tools/source.properties ] || \
-              mv cmdline-tools/source.properties cmdline-tools/latest/
-
-            rm -f tools.zip
+            mkdir -p "$ANDROID_HOME/cmdline-tools/latest"
+            mv cmdline-tools/* "$ANDROID_HOME/cmdline-tools/latest/"
           fi
 
-          {
-            echo "ANDROID_HOME=$ANDROID_HOME"
-            echo "ANDROID_SDK_ROOT=$ANDROID_HOME"
-          } >> "$GITHUB_ENV"
-
-          {
-            echo "$ANDROID_HOME/platform-tools"
-            echo "$ANDROID_HOME/emulator"
-            echo "$ANDROID_HOME/cmdline-tools/latest/bin"
-          } >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
 
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
 
-          java -version
-          sdkmanager --version
+          yes | sdkmanager --licenses || true
 
-          yes | sdkmanager --licenses >/dev/null || true
-
-          sdkmanager --install \
+          sdkmanager \
             "platform-tools" \
             "platforms;android-35" \
             "emulator" \
-            "system-images;android-35;google_apis;x86_64"
+            "system-images;android-35;google_apis_playstore;x86_64"
 
-      # 7. Save SDK Cache
       - name: Save Android SDK Cache
-        if: steps.sdk-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
-          path: ~/android-sdk
-          key: ${{ env.SDK_CACHE_KEY }}
+          path: ${{ runner.temp }}/android-sdk
+          key: android-sdk-api35-google-play-x86_64-v4
 
-      # 8. Create AVD
-      - name: Create Android 15 AVD
-        shell: bash
+      - name: Configure KVM
         run: |
-          set -e
+          if [ -e /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+            echo "KVM available"
+          else
+            echo "KVM not available"
+          fi
 
-          export ANDROID_HOME="$HOME/android-sdk"
-          export ANDROID_SDK_ROOT="$ANDROID_HOME"
-          export ANDROID_AVD_HOME="$HOME/.android/avd"
-          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+      - name: Create Android 15 Play Store AVD
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
 
-          mkdir -p "$ANDROID_AVD_HOME"
-          touch "$HOME/.android/repositories.cfg"
+          mkdir -p "$HOME/.android/avd"
 
           echo "no" | avdmanager create avd \
-            --name "$AVD_NAME" \
-            --package "system-images;android-35;google_apis;x86_64" \
-            --device "pixel_2" \
+            -n "$AVD_NAME" \
+            -k "system-images;android-35;google_apis_playstore;x86_64" \
+            -d pixel_2 \
             --force
 
-          CONFIG="$ANDROID_AVD_HOME/$AVD_NAME.avd/config.ini"
+          AVD_CONFIG="$HOME/.android/avd/${AVD_NAME}.avd/config.ini"
 
-          test -f "$CONFIG"
-
-          sed -i -E \
-            '/^(hw\.lcd\.(width|height|density)|skin\.(name|path|dynamic)|hw\.ramSize|hw\.cpu\.ncore|vm\.heapSize|hw\.keyboard|disk\.dataPartition\.size)=/d' \
-            "$CONFIG"
-
-          cat >> "$CONFIG" <<'EOF'
+          cat >> "$AVD_CONFIG" <<'EOF'
           hw.lcd.width=720
           hw.lcd.height=1280
           hw.lcd.density=240
@@ -170,194 +112,91 @@ jobs:
           vm.heapSize=512
           hw.keyboard=yes
           disk.dataPartition.size=8G
+          showDeviceFrame=no
           EOF
 
-          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
-
-          avdmanager list avd
-
-          test -f "$ANDROID_AVD_HOME/$AVD_NAME.ini"
-
-      # 9. Desktop Display
       - name: Start Desktop Display
-        shell: bash
         run: |
-          set -e
-
           export DISPLAY=:0
-          echo "DISPLAY=:0" >> "$GITHUB_ENV"
 
-          nohup Xvfb :0 \
-            -screen 0 1280x1400x24 \
-            -ac +extension GLX +render -noreset \
-            > "$HOME/xvfb.log" 2>&1 &
+          Xvfb :0 -screen 0 1280x1400x24 &
+          sleep 3
 
-          for i in $(seq 1 30); do
-            if xdpyinfo -display :0 >/dev/null 2>&1; then
-              break
-            fi
-            sleep 1
-          done
-
-          xdpyinfo -display :0 >/dev/null
-
-          nohup openbox \
-            > "$HOME/openbox.log" 2>&1 &
-
+          openbox &
           sleep 2
 
-      # 10. Start Emulator
       - name: Start Android Emulator
-        shell: bash
         run: |
-          set -e
-
-          export DISPLAY=:0
-          export ANDROID_HOME="$HOME/android-sdk"
-          export ANDROID_AVD_HOME="$HOME/.android/avd"
-
-          export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH"
-
-          test -f "$ANDROID_AVD_HOME/$AVD_NAME.ini"
-
-          emulator -list-avds
+          export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/emulator:$PATH"
 
           nohup emulator \
             -avd "$AVD_NAME" \
-            -accel on \
+            -accel auto \
             -gpu swiftshader_indirect \
             -no-audio \
             -no-boot-anim \
             -no-snapshot \
             -netfast \
-            > "$HOME/emulator.log" 2>&1 &
+            -memory 4096 \
+            -cores 4 \
+            > "$RUNNER_TEMP/emulator.log" 2>&1 &
 
-          EMU_PID=$!
-          echo "EMU_PID=$EMU_PID" >> "$GITHUB_ENV"
+          echo $! > "$RUNNER_TEMP/emulator.pid"
 
-          adb start-server
+          echo "Waiting for emulator..."
 
-          echo "Waiting for ADB..."
+          adb wait-for-device
 
-          FOUND=0
+          for i in $(seq 1 120); do
+            BOOT_STATUS=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
 
-          for i in $(seq 1 60); do
-
-            if ! kill -0 "$EMU_PID" 2>/dev/null; then
-              echo "Emulator stopped!"
-              cat "$HOME/emulator.log"
-              exit 1
-            fi
-
-            if adb devices | grep -q "emulator-5554"; then
-              FOUND=1
+            if [ "$BOOT_STATUS" = "1" ]; then
+              echo "Android boot completed"
               break
             fi
 
             sleep 5
           done
 
-          if [ "$FOUND" -ne 1 ]; then
-            echo "ADB connection timeout!"
-            cat "$HOME/emulator.log"
+          if [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" != "1" ]; then
+            echo "Android boot failed"
+            tail -100 "$RUNNER_TEMP/emulator.log"
             exit 1
           fi
 
-          timeout 300 adb -s emulator-5554 wait-for-device
+          adb shell wm size 720x1280
+          adb shell wm density 240
+          adb shell settings put system screen_off_timeout 2147483647
 
-          echo "Waiting for Android boot..."
+          adb shell input keyevent 82 || true
 
-          BOOTED=0
-
-          for i in $(seq 1 180); do
-
-            if ! kill -0 "$EMU_PID" 2>/dev/null; then
-              echo "Emulator stopped during boot!"
-              cat "$HOME/emulator.log"
-              exit 1
-            fi
-
-            BOOT=$(adb -s emulator-5554 shell \
-              getprop sys.boot_completed 2>/dev/null \
-              | tr -d '\r' || true)
-
-            if [ "$BOOT" = "1" ]; then
-              BOOTED=1
-              break
-            fi
-
-            sleep 5
-          done
-
-          if [ "$BOOTED" -ne 1 ]; then
-            echo "Android boot timeout!"
-            cat "$HOME/emulator.log"
-            adb logcat -d -t 300 || true
-            exit 1
-          fi
-
-          adb -s emulator-5554 shell wm size 720x1280
-          adb -s emulator-5554 shell wm density 240
-
-          adb -s emulator-5554 shell \
-            settings put global stay_on_while_plugged_in 3
-
-          adb -s emulator-5554 shell \
-            settings put system screen_off_timeout 2147483647
-
-          adb -s emulator-5554 shell input keyevent 82 || true
-
-          echo "Android 15 booted successfully!"
-
-          adb devices
-
-      # 11. Install APKs
       - name: Install APK Files
-        shell: bash
+        continue-on-error: true
         run: |
-          shopt -s nullglob
+          if [ -d "apks" ]; then
+            for APK in apks/*.apk; do
+              [ -f "$APK" ] || continue
 
-          APK_FILES=(apks/*.apk)
+              echo "Installing: $APK"
 
-          if [ ${#APK_FILES[@]} -eq 0 ]; then
-            echo "No APK files found. Skipping."
-            exit 0
+              if ! adb install -r "$APK"; then
+                echo "Warning: APK installation failed: $APK"
+              fi
+            done
+          else
+            echo "No apks folder found. Skipping APK installation."
           fi
 
-          FAILED=0
-
-          for APK in "${APK_FILES[@]}"; do
-
-            echo "Installing $APK"
-
-            if adb -s emulator-5554 install -r "$APK"; then
-              echo "Installed: $APK"
-            else
-              echo "::warning::Failed to install $APK"
-              FAILED=$((FAILED + 1))
-            fi
-
-          done
-
-          echo "APK installation finished."
-          echo "Failed APKs: $FAILED"
-
-      # 12. VNC Server
-      - name: Start VNC Server
+      - name: Configure VNC Password
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
-        shell: bash
         run: |
-          set -e
-
           if [ -z "$VNC_PASSWORD" ]; then
-            echo "VNC_PASSWORD secret is missing!"
+            echo "VNC_PASSWORD secret is missing"
             exit 1
           fi
 
           mkdir -p "$HOME/.vnc"
-
-          umask 077
 
           x11vnc -storepasswd \
             "$VNC_PASSWORD" \
@@ -365,51 +204,40 @@ jobs:
 
           chmod 600 "$HOME/.vnc/passwd"
 
-          unset VNC_PASSWORD
+      - name: Start VNC Server
+        run: |
+          export DISPLAY=:0
 
           nohup x11vnc \
             -display :0 \
+            -rfbauth "$HOME/.vnc/passwd" \
+            -localhost \
+            -rfbport 5900 \
             -forever \
             -shared \
-            -rfbport 5900 \
-            -localhost \
-            -rfbauth "$HOME/.vnc/passwd" \
             -noxdamage \
-            -repeat \
-            > "$HOME/x11vnc.log" 2>&1 &
+            > "$RUNNER_TEMP/vnc.log" 2>&1 &
 
-          for i in $(seq 1 30); do
+          sleep 3
 
-            if nc -z 127.0.0.1 5900; then
-              echo "VNC server is ready!"
-              break
-            fi
-
-            sleep 1
-          done
-
-          nc -z 127.0.0.1 5900 || {
-            cat "$HOME/x11vnc.log"
+          if ! nc -z 127.0.0.1 5900; then
+            echo "VNC server failed"
+            cat "$RUNNER_TEMP/vnc.log"
             exit 1
-          }
+          fi
 
-      # 13. Tailscale
       - name: Connect Tailscale
         uses: tailscale/github-action@v3
         with:
-          authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
-          args: --hostname=android-cloud-${{ github.run_id }}
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          hostname: android-cloud-${{ github.run_id }}
 
-      # 14. noVNC
-      - name: Start noVNC Browser
-        shell: bash
+      - name: Start noVNC
         run: |
-          set -e
-
-          TS_IP=$(tailscale ip -4 | head -n1)
+          TS_IP=$(tailscale ip -4)
 
           if [ -z "$TS_IP" ]; then
-            echo "Tailscale IP unavailable!"
+            echo "Tailscale IP not found"
             exit 1
           fi
 
@@ -419,70 +247,53 @@ jobs:
             --web=/usr/share/novnc \
             "${TS_IP}:6080" \
             127.0.0.1:5900 \
-            > "$HOME/novnc.log" 2>&1 &
+            > "$RUNNER_TEMP/novnc.log" 2>&1 &
 
-          for i in $(seq 1 30); do
+          sleep 5
 
-            if nc -z "$TS_IP" 6080; then
-              echo "noVNC is ready!"
-              break
-            fi
-
-            sleep 1
-          done
-
-          nc -z "$TS_IP" 6080 || {
-            cat "$HOME/novnc.log"
+          if ! nc -z "$TS_IP" 6080; then
+            echo "noVNC failed"
+            cat "$RUNNER_TEMP/novnc.log"
             exit 1
-          }
+          fi
 
-      # 15. Connection Details
-      - name: Show Connection Details
-        shell: bash
+          echo "=================================="
+          echo "ANDROID 15 CLOUD VNC READY"
+          echo "=================================="
+          echo "noVNC URL: http://${TS_IP}:6080/vnc.html"
+          echo "VNC Port: 5900"
+          echo "Android: API 35"
+          echo "Google Play Store: Enabled"
+          echo "=================================="
+
+      - name: Health Check
         run: |
-          URL="http://${TS_IP}:6080/vnc.html"
+          echo "Checking Android, VNC and noVNC..."
 
-          {
-            echo "## Android 15 Cloud Emulator"
-            echo ""
-            echo "- OS: Android 15 (API 35)"
-            echo "- Display: 720x1280"
-            echo "- RAM: 4GB"
-            echo "- CPU: 4 cores"
-            echo "- Connection: Tailscale private network"
-            echo ""
-            echo "### Browser VNC"
-            echo "$URL"
-            echo ""
-            echo "### VNC Password"
-            echo "Use your configured VNC_PASSWORD secret."
-          } >> "$GITHUB_STEP_SUMMARY"
+          adb devices
+          adb shell getprop ro.build.version.release
+          adb shell pm list packages | grep -i vending || true
 
-          echo "Android is ready!"
-          echo "$URL"
+          nc -z 127.0.0.1 5900
+          nc -z "$TS_IP" 6080
 
-      # 16. Keep Alive
-      - name: Keep Android Running
-        shell: bash
+          echo "All services are running."
+
+      - name: Keep Cloud Android Running
         run: |
           while true; do
+            echo "[$(date)] Android Cloud Status"
 
-            if ! adb -s emulator-5554 get-state >/dev/null 2>&1; then
-              echo "Android emulator stopped!"
-              cat "$HOME/emulator.log"
-              exit 1
+            if ! adb get-state >/dev/null 2>&1; then
+              echo "ADB disconnected"
             fi
 
             if ! nc -z 127.0.0.1 5900; then
-              echo "VNC server stopped!"
-              cat "$HOME/x11vnc.log"
-              exit 1
+              echo "VNC server is down"
             fi
 
             if ! nc -z "$TS_IP" 6080; then
-              echo "noVNC stopped!"
-              cat "$HOME/novnc.log"
-              exit 1
+              echo "noVNC server is down"
             fi
 
             sleep 60
