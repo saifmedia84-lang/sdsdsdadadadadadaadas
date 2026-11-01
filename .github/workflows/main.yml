@@ -1,62 +1,45 @@
 
-name: Android 15 Cloud VNC
+name: Android 15 Cloud Emulator VNC
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 permissions:
   contents: read
 
 jobs:
   android-cloud:
-    name: Android 15 Emulator
+    name: Android 15 Cloud
     runs-on: ubuntu-22.04
     timeout-minutes: 350
 
     steps:
-      # 1. Download repository
+      # 1. Checkout
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # 2. Install Java 17 (important SDK manager fix)
+      # 2. Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 3. Install required Linux packages
+      # 3. Dependencies
       - name: Install Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            curl \
-            unzip \
-            xvfb \
-            x11vnc \
-            openbox \
-            novnc \
-            websockify
+            curl unzip xvfb x11vnc openbox \
+            novnc websockify
 
       # 4. Verify Java
       - name: Verify Java
         run: |
-          echo "Java location:"
-          which java
           java -version
+          echo "JAVA_HOME=$JAVA_HOME"
 
-          JAVA_VERSION=$(java -version 2>&1 | head -n 1)
-          echo "$JAVA_VERSION"
-
-          java -version 2>&1 | grep -q '17' || {
-            echo "ERROR: Java 17 is required!"
-            exit 1
-          }
-
-      # 5. Install Android SDK
+      # 5. Android SDK
       - name: Setup Android SDK
         shell: bash
         run: |
@@ -66,23 +49,36 @@ jobs:
           export ANDROID_SDK_ROOT="$ANDROID_HOME"
 
           mkdir -p "$ANDROID_HOME/cmdline-tools"
+
           cd "$ANDROID_HOME"
 
-          curl -fLo tools.zip \
-            https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
+          curl -fL \
+            https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip \
+            -o tools.zip
 
           unzip -q tools.zip
+
           mkdir -p cmdline-tools/latest
-          mv cmdline-tools/bin cmdline-tools/lib cmdline-tools/latest/
-          mv cmdline-tools/NOTICE.txt cmdline-tools/latest/ 2>/dev/null || true
-          mv cmdline-tools/source.properties cmdline-tools/latest/ 2>/dev/null || true
+
+          mv cmdline-tools/bin cmdline-tools/latest/
+          mv cmdline-tools/lib cmdline-tools/latest/
+
+          if [ -f cmdline-tools/NOTICE.txt ]; then
+            mv cmdline-tools/NOTICE.txt cmdline-tools/latest/
+          fi
+
+          if [ -f cmdline-tools/source.properties ]; then
+            mv cmdline-tools/source.properties cmdline-tools/latest/
+          fi
+
           rm -f tools.zip
 
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
           echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
 
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
 
@@ -97,10 +93,21 @@ jobs:
             "emulator" \
             "system-images;android-35;google_apis;x86_64"
 
-      # 6. Create Android 15 virtual device
-      - name: Create Android 15 Emulator
+      # 6. Create AVD
+      - name: Create Android 15 AVD
+        shell: bash
         run: |
           set -e
+
+          export ANDROID_HOME="$HOME/android-sdk"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH"
+
+          mkdir -p "$ANDROID_AVD_HOME"
+
+          touch "$HOME/.android/repositories.cfg"
 
           echo "no" | avdmanager create avd \
             --name CloudAndroid15 \
@@ -108,25 +115,43 @@ jobs:
             --device "pixel_2" \
             --force
 
-          mkdir -p "$HOME/.android"
-          touch "$HOME/.android/repositories.cfg"
+          echo "ANDROID_AVD_HOME=$ANDROID_AVD_HOME" >> "$GITHUB_ENV"
 
-      # 7. Start virtual display
+          echo "Checking AVD files..."
+          avdmanager list avd
+          ls -la "$ANDROID_AVD_HOME"
+
+          test -f "$ANDROID_AVD_HOME/CloudAndroid15.ini"
+
+          echo "AVD successfully created!"
+
+      # 7. Desktop display
       - name: Start Desktop Display
         run: |
-          export DISPLAY=:0
-
           Xvfb :0 -screen 0 1280x800x24 \
             -ac +extension GLX +render -noreset &
 
           sleep 3
+
           openbox &
           sleep 2
 
-      # 8. Boot Android 15
+      # 8. Start Android Emulator
       - name: Start Android Emulator
+        shell: bash
         run: |
+          set -e
+
           export DISPLAY=:0
+          export ANDROID_HOME="$HOME/android-sdk"
+          export ANDROID_AVD_HOME="$HOME/.android/avd"
+
+          export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH"
+
+          echo "Available AVDs:"
+          emulator -list-avds
+
+          test -f "$ANDROID_AVD_HOME/CloudAndroid15.ini"
 
           emulator \
             -avd CloudAndroid15 \
@@ -136,80 +161,95 @@ jobs:
             -accel off \
             -no-snapshot \
             -memory 2048 \
-            -cores 2 \
-            -skin 1080x1920 &
+            -cores 2 &
+
+          echo "Waiting for ADB..."
 
           adb wait-for-device
 
           echo "Waiting for Android boot..."
 
+          BOOTED=0
+
           for i in $(seq 1 180); do
             BOOT=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
 
             if [ "$BOOT" = "1" ]; then
-              echo "Android boot completed!"
+              BOOTED=1
               break
-            fi
-
-            if [ "$i" -eq 180 ]; then
-              echo "Android boot timeout!"
-              exit 1
             fi
 
             sleep 5
           done
 
-          adb shell settings put global stay_on_while_plugged_in 3
+          if [ "$BOOTED" -ne 1 ]; then
+            echo "Android boot timeout!"
+            adb logcat -d -t 300 || true
+            exit 1
+          fi
+
           adb shell wm size 720x1280
           adb shell wm density 240
+          adb shell settings put global stay_on_while_plugged_in 3
 
+          echo "Android 15 is ready!"
           adb devices
 
-      # 9. Install APK files from apks folder
+      # 9. Install APKs
       - name: Install APK Files
+        shell: bash
         run: |
           shopt -s nullglob
-
           APK_FILES=(apks/*.apk)
 
           if [ ${#APK_FILES[@]} -eq 0 ]; then
-            echo "No APK found. Skipping APK installation."
+            echo "No APK files found. Skipping."
           else
             for APK in "${APK_FILES[@]}"; do
-              echo "Installing: $APK"
+              echo "Installing $APK"
               adb install -r "$APK"
             done
           fi
 
-      # 10. Start VNC server
+      # 10. VNC Server
       - name: Start VNC Server
         env:
           VNC_PASSWORD: ${{ secrets.VNC_PASSWORD }}
         run: |
+          set -e
+
           if [ -z "$VNC_PASSWORD" ]; then
-            echo "Missing VNC_PASSWORD GitHub secret!"
+            echo "VNC_PASSWORD secret is missing!"
             exit 1
           fi
+
+          mkdir -p "$HOME/.vnc"
+
+          x11vnc -storepasswd \
+            "$VNC_PASSWORD" \
+            "$HOME/.vnc/passwd"
+
+          chmod 600 "$HOME/.vnc/passwd"
 
           x11vnc \
             -display :0 \
             -forever \
             -shared \
             -rfbport 5900 \
-            -passwd "$VNC_PASSWORD" \
+            -rfbauth "$HOME/.vnc/passwd" \
             -noxdamage \
             -repeat &
 
           sleep 3
 
-      # 11. Connect private Tailscale network
+      # 11. Tailscale
       - name: Connect Tailscale
         uses: tailscale/github-action@v3
         with:
           authkey: ${{ secrets.TAILSCALE_AUTH_KEY }}
 
-      # 12. Start browser VNC
-      - name: Start noVNC Browser
+      # 12. Browser VNC
+      - name: Start noVNC
         run: |
           websockify \
             --web=/usr/share/novnc \
@@ -218,30 +258,33 @@ jobs:
 
           sleep 3
 
-          echo "noVNC server started!"
+          echo "noVNC started!"
 
-      # 13. Show connection details
-      - name: Android VNC Connection
+      # 13. Connection URL
+      - name: Show Android Connection
         run: |
           IP=$(tailscale ip -4)
 
           echo "## Android 15 Cloud Emulator" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Android OS: Android 15 (API 35)" >> "$GITHUB_STEP_SUMMARY"
-          echo "Connection: Private Tailscale Network" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Android:** Android 15 / API 35" >> "$GITHUB_STEP_SUMMARY"
+          echo "**VNC:** Browser-based control" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Open this URL:" >> "$GITHUB_STEP_SUMMARY"
           echo "http://${IP}:6080/vnc.html" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "VNC Password: Your VNC_PASSWORD secret" >> "$GITHUB_STEP_SUMMARY"
 
-          echo "=================================="
-          echo "ANDROID 15 IS READY"
+          echo "================================"
+          echo "ANDROID 15 READY"
           echo "http://${IP}:6080/vnc.html"
-          echo "=================================="
+          echo "================================"
 
-      # 14. Keep Android running
-      - name: Keep Android Alive
+      # 14. Keep session alive
+      - name: Keep Android Running
         run: |
-          echo "Android 15 is running."
-          sleep 20000
+          echo "Android 15 Cloud is running."
+
+          while true; do
+            adb get-state
+            sleep 60
+          done
+
